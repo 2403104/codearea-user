@@ -1,0 +1,1084 @@
+const express = require('express');
+const fs = require('fs');
+const path = require('path');
+const { exec } = require('child_process');
+const { v4: uuidv4 } = require('uuid');
+
+const router = express.Router();
+
+router.post('/judge', async (req, res) => {
+    const { input,answer, checkerCode, userCode, language } = req.body;
+    const jobId = uuidv4();
+    const jobDir = path.join(__dirname, 'codes', jobId);
+    fs.mkdirSync(jobDir, { recursive: true });
+
+    fs.writeFileSync(path.join(jobDir, 'input.txt'), input);
+    fs.writeFileSync(path.join(jobDir, 'answer.txt'), answer);
+    fs.writeFileSync(path.join(jobDir, 'checker.cpp'), checkerCode);
+    fs.writeFileSync(path.join(jobDir, 'result.txt'), '');
+
+    const testlibPath = path.join(__dirname, 'testlib.h');
+    const destTestlibPath = path.join(jobDir, 'testlib.h');
+    fs.copyFileSync(testlibPath, destTestlibPath);
+
+    let userFile = '';
+    if (language === 'cpp') userFile = 'userCode.cpp';
+    else if (language === 'python') userFile = 'userCode.py';
+    else if (language === 'java') userFile = 'userCode.java';
+    fs.writeFileSync(path.join(jobDir, userFile), userCode);
+
+    const dirPath = jobDir.replace(/\\/g, "/");
+
+    let command = "";
+    if (language === 'cpp') {
+        command = `docker run --rm -v "${dirPath}:/app" gcc bash -c "cd /app && \
+        g++ userCode.cpp -o userCode && \
+        g++ checker.cpp -o customCheck && \
+        ./userCode < input.txt > output.txt && \
+        ./customCheck input.txt output.txt answer.txt > result.txt 2>&1"`;
+    }
+
+    exec(command, (err, stdout, stderr) => {
+        try {
+            const result = fs.readFileSync(path.join(jobDir, 'result.txt'), 'utf8');
+            console.log("Result " + result)
+            fs.rmSync(jobDir, { recursive: true, force: true });
+            return res.json({ verdict: result.trim() });
+        } catch (e) {
+            return res.json({ error: "Judging failed.", details: e.message });
+        }
+    });
+});
+
+module.exports = router;
+
+
+
+
+
+
+
+
+
+
+
+const express = require('express');
+const fs = require('fs');
+const path = require('path');
+const { exec, execSync } = require('child_process');
+const { v4: uuidv4 } = require('uuid');
+
+const router = express.Router();
+
+router.post('/judge', async (req, res) => {
+    const { testcases, checkerCode, userCode, language } = req.body;
+    const jobId = uuidv4();
+    const jobDir = path.join(__dirname, 'codes', jobId);
+    fs.mkdirSync(jobDir, { recursive: true });
+
+    fs.writeFileSync(path.join(jobDir, 'checker.cpp'), checkerCode);
+    const testLibPath = path.join(__dirname, 'testlib.h');
+    fs.copyFileSync(testLibPath, path.join(jobDir, 'testlib.h'));
+
+    let userFile = '';
+    if (language === 'cpp') userFile = 'userCode.cpp';
+    else if (language === 'python') userFile = 'userCode.py';
+    else if (language === 'java') userFile = 'userCode.java';
+    fs.writeFileSync(path.join(jobDir, userFile), userCode);
+
+    const dirPath = jobDir.replace(/\\/g, "/");
+
+    let setUpCommand = `docker run -dit -v "${dirPath}:/app" gcc bash`;
+    const id = execSync(setUpCommand).toString().trim();
+
+    try {
+        execSync(`docker start ${id}`);
+        execSync(`docker exec ${id} bash -c "cd /app && g++ userCode.cpp -o userCode && g++ checker.cpp -o customCheck"`);
+
+        let verdicts = [];
+        const inputPath = path.join(jobDir, 'input.txt');
+        const outputPath = path.join(jobDir, 'output.txt');
+        const answerPath = path.join(jobDir, 'answer.txt');
+        const resultPath = path.join(jobDir, 'result.txt');
+
+        for (let i = 0; i < testcases.length; i++) {
+
+            fs.writeFileSync(inputPath, testcases[i].input);
+            fs.writeFileSync(answerPath, testcases[i].answer);
+            fs.writeFileSync(outputPath, '');
+            fs.writeFileSync(resultPath, '');
+
+            execSync(`docker cp "${inputPath}" ${id}:/app/input.txt`);
+            execSync(`docker cp "${answerPath}" ${id}:/app/answer.txt`);
+            
+            execSync(`docker exec ${id} bash -c "cd /app && ./userCode < input.txt > output.txt && ./customCheck input.txt output.txt answer.txt > result.txt 2>&1 || true"`);
+            
+            execSync(`docker cp ${id}:/app/result.txt "${resultPath}"`);
+
+            const result=fs.readFileSync(resultPath,'utf-8').trim();
+            // console.log("Result "+result);
+
+            verdicts.push({testcase:i+1,verdict:result});
+            
+        }
+        fs.rmSync(jobDir, { recursive: true, force: true });
+        return res.json({ verdicts });        
+
+    } catch (e) {
+        console.log(e);
+        // console.log("stdout "+e.stdout);
+        // console.log("stderr "+e.stderr);
+        return res.json({ error: "Judging failed.", details: e.message });
+    }finally {
+        execSync(`docker rm -f ${id}`);
+    }
+});
+
+module.exports = router;
+
+
+
+
+const express = require('express');
+const fs = require('fs');
+const path = require('path');
+const { execSync } = require('child_process');
+const { v4: uuidv4 } = require('uuid');
+
+const router = express.Router();
+
+router.post('/judge', async (req, res) => {
+    try {
+        const { testcases, checkerCode, userCode, language } = req.body;
+        const jobId = uuidv4();
+        const jobDir = path.join(__dirname, 'codes', jobId);
+
+        try {
+            fs.mkdirSync(jobDir, { recursive: true });
+            fs.writeFileSync(path.join(jobDir, 'checker.cpp'), checkerCode);
+            const testLibPath = path.join(__dirname, 'testlib.h');
+            fs.copyFileSync(testLibPath, path.join(jobDir, 'testlib.h'));
+        } catch (e) {
+            return res.json({
+                errorType: "File Handling Error",
+                errMessage: e.message
+            });
+        }
+
+        let userFile = '';
+        if (language === 'cpp') userFile = 'userCode.cpp';
+        else if (language === 'python') userFile = 'userCode.py';
+        else if (language === 'java') userFile = 'userCode.java';
+
+        try {
+            fs.writeFileSync(path.join(jobDir, userFile), userCode);
+        } catch (e) {
+            return res.json({
+                errorType: "File Handling Error",
+                errMessage: e.message
+            });
+        }
+
+        const dirPath = jobDir.replace(/\\/g, "/");
+
+        let id;
+        try {
+            let setUpCommand = `docker run -dit -v "${dirPath}:/app" gcc bash`;
+            id = execSync(setUpCommand).toString().trim();
+        } catch (e) {
+            return res.json({
+                errorType: "Docker Error",
+                errMessage: e.stderr?.toString() || e.message
+            });
+        }
+
+        try {
+            execSync(`docker start ${id}`);
+        } catch (e) {
+            return res.json({
+                errorType: "Docker Start Error",
+                errMessage: e.stderr?.toString() || e.message
+            });
+        }
+
+        try {
+            execSync(`docker exec ${id} bash -c "cd /app && g++ userCode.cpp -o userCode"`);
+        } catch (e) {
+            return res.json({
+                errorType: "Compilation Error (userCode)",
+                errMessage: e.stderr?.toString() || e.stdout?.toString() || e.message
+            });
+        }
+
+        try {
+            execSync(`docker exec ${id} bash -c "cd /app && g++ checker.cpp -o customCheck"`);
+        } catch (e) {
+            return res.json({
+                errorType: "Compilation Error (checkerCode)",
+                errMessage: e.stderr?.toString() || e.stdout?.toString() || e.message
+            });
+        }
+
+        let verdicts = [];
+        const inputPath = path.join(jobDir, 'input.txt');
+        const outputPath = path.join(jobDir, 'output.txt');
+        const answerPath = path.join(jobDir, 'answer.txt');
+        const resultPath = path.join(jobDir, 'result.txt');
+        const timePath=path.join(jobDir,'time.txt');
+
+        const timeLimit=2;
+
+        for (let i = 0; i < testcases.length; i++) {
+            try {
+                fs.writeFileSync(inputPath, testcases[i].input);
+                fs.writeFileSync(answerPath, testcases[i].answer);
+                fs.writeFileSync(outputPath, '');
+                fs.writeFileSync(resultPath, '');
+                fs.writeFileSync(timePath, '');
+
+                execSync(`docker cp "${inputPath}" ${id}:/app/input.txt`);
+                execSync(`docker cp "${answerPath}" ${id}:/app/answer.txt`);
+
+                execSync(`docker exec ${id} bash -c "cd /app && timeout ${timeLimit}  ./userCode < input.txt > output.txt && ./customCheck input.txt output.txt answer.txt > result.txt 2>&1 || true"`);
+
+                execSync(`docker cp ${id}:/app/result.txt "${resultPath}"`);
+
+                const result = fs.readFileSync(resultPath, 'utf-8').trim();
+                verdicts.push({ testcase: i + 1, verdict: result });
+            } catch (e) {
+                verdicts.push({ testcase: i + 1, verdict: "Runtime Error or Docker Copy Error", errMessage: e.message });
+            }
+        }
+
+        fs.rmSync(jobDir, { recursive: true, force: true });
+
+        return res.json({ verdicts });
+
+    } catch (e) {
+        return res.json({
+            errorType: "Backend Error",
+            errMessage: e.message
+        });
+    } finally {
+        try {
+            if (id) execSync(`docker rm -f ${id}`);
+        } catch (e) {
+            console.error("Docker cleanup error:", e.stderr?.toString() || e.message);
+        }
+    }
+});
+
+module.exports = router;
+
+
+
+
+
+
+
+const express = require('express');
+const fs = require('fs');
+const path = require('path');
+const { execSync } = require('child_process');
+const { v4: uuidv4 } = require('uuid');
+
+const router = express.Router();
+
+router.post('/judge', async (req, res) => {
+    let id = null;
+    try {
+        const { testcases, checkerCode, userCode, language } = req.body;
+        const jobId = uuidv4();
+        const jobDir = path.join(__dirname, 'codes', jobId);
+
+        try {
+            fs.mkdirSync(jobDir, { recursive: true });
+            fs.writeFileSync(path.join(jobDir, 'checker.cpp'), checkerCode);
+            const testLibPath = path.join(__dirname, 'testlib.h');
+            fs.copyFileSync(testLibPath, path.join(jobDir, 'testlib.h'));
+        } catch (e) {
+            return res.json({
+                errorType: "File Handling Error",
+                errMessage: e.message
+            });
+        }
+
+        let userFile = '';
+        if (language === 'cpp') userFile = 'userCode.cpp';
+        else if (language === 'python') userFile = 'userCode.py';
+        else if (language === 'java') userFile = 'userCode.java';
+
+        try {
+            fs.writeFileSync(path.join(jobDir, userFile), userCode);
+        } catch (e) {
+            return res.json({
+                errorType: "File Handling Error",
+                errMessage: e.message
+            });
+        }
+
+        const dirPath = jobDir.replace(/\\/g, "/");
+
+        try {
+            let setUpCommand = `docker run -dit -v "${dirPath}:/app" gcc-with-time bash`;
+            id = execSync(setUpCommand).toString().trim();
+        } catch (e) {
+            return res.json({
+                errorType: "Docker Error",
+                errMessage: e.stderr?.toString() || e.message
+            });
+        }
+
+        try {
+            execSync(`docker start ${id}`);
+        } catch (e) {
+            return res.json({
+                errorType: "Docker Start Error",
+                errMessage: e.stderr?.toString() || e.message
+            });
+        }
+
+        try {
+            execSync(`docker exec ${id} bash -c "cd /app && g++ userCode.cpp -o userCode"`);
+        } catch (e) {
+            return res.json({
+                errorType: "Compilation Error (userCode)",
+                errMessage: e.stderr?.toString() || e.stdout?.toString() || e.message
+            });
+        }
+
+        try {
+            execSync(`docker exec ${id} bash -c "cd /app && g++ checker.cpp -o customCheck"`);
+        } catch (e) {
+            return res.json({
+                errorType: "Compilation Error (checkerCode)",
+                errMessage: e.stderr?.toString() || e.stdout?.toString() || e.message
+            });
+        }
+
+        let verdicts = [];
+        const inputPath = path.join(jobDir, 'input.txt');
+        const outputPath = path.join(jobDir, 'output.txt');
+        const answerPath = path.join(jobDir, 'answer.txt');
+        const resultPath = path.join(jobDir, 'result.txt');
+        const timePath = path.join(jobDir, 'time.txt');
+        const exitCodePath = path.join(jobDir, 'exitCode.txt');
+
+        const timeLimit = 2;
+
+        for (let i = 0; i < testcases.length; i++) {
+            try {
+                fs.writeFileSync(inputPath, testcases[i].input);
+                fs.writeFileSync(answerPath, testcases[i].answer);
+                fs.writeFileSync(outputPath, '');
+                fs.writeFileSync(resultPath, '');
+                fs.writeFileSync(timePath, '');
+                fs.writeFileSync(exitCodePath, '');
+
+                execSync(`docker cp "${inputPath}" ${id}:/app/input.txt`);
+                execSync(`docker cp "${answerPath}" ${id}:/app/answer.txt`);
+
+                execSync(`docker exec ${id} bash -c "cd /app && timeout ${timeLimit} /usr/bin/time -f '%e' -o time.txt ./userCode < input.txt > output.txt; echo $? > exitCode.txt; ./customCheck input.txt output.txt answer.txt > result.txt 2>&1 || true"`);
+
+                execSync(`docker cp ${id}:/app/result.txt "${resultPath}"`);
+                execSync(`docker cp ${id}:/app/time.txt "${timePath}"`);
+                execSync(`docker cp ${id}:/app/exitCode.txt "${exitCodePath}"`);
+
+                const exitCodeRaw = fs.readFileSync(exitCodePath, 'utf-8').trim();
+                const exitCode = parseInt(exitCodeRaw);
+
+                let timeUsed = 0;
+                let timeVerdict = "";
+                let verdict = "";
+
+                if (exitCode === 124) {
+                    verdict = "Time Limit Exceeded";
+                    timeVerdict = "TLE";
+                    timeUsed = timeLimit * 1000;
+                } else if (exitCode !== 0) {
+                    verdict = "Runtime Error";
+                    timeVerdict = "N/A";
+                    timeUsed = 0;
+                } else {
+                    let timeUsedRaw = fs.readFileSync(timePath, 'utf-8').trim();
+                    timeUsed = parseFloat(timeUsedRaw);
+                    if (isNaN(timeUsed)) {
+                        timeUsed = 0;
+                        timeVerdict = "Time Measure Failed";
+                    } else {
+                        timeUsed = Math.min(timeLimit * 1000, timeUsed * 1000);
+                        timeVerdict = (timeUsed >= timeLimit * 1000) ? "Time Limit Exceeded" : "Time OK";
+                    }
+                    verdict = fs.readFileSync(resultPath, 'utf-8').trim();
+                }
+
+                verdicts.push({
+                    testcase: i + 1,
+                    time: timeUsed,
+                    timeVerdict: timeVerdict,
+                    verdict: verdict
+                });
+            } catch (e) {
+                verdicts.push({ testcase: i + 1, verdict: "Runtime Error or Docker Copy Error", errMessage: e.message });
+            }
+        }
+
+        fs.rmSync(jobDir, { recursive: true, force: true });
+
+        return res.json({ verdicts });
+
+    } catch (e) {
+        return res.json({
+            errorType: "Backend Error",
+            errMessage: e.message
+        });
+    } finally {
+        try {
+            if (id) execSync(`docker rm -f ${id}`);
+        } catch (e) {}
+    }
+});
+
+module.exports = router;
+
+
+
+
+const express = require('express');
+const fs = require('fs');
+const path = require('path');
+const { execSync } = require('child_process');
+const { v4: uuidv4 } = require('uuid');
+
+const router = express.Router();
+
+router.post('/judge', async (req, res) => {
+    let id = null;
+    try {
+        const { testcases, checkerCode, userCode, language } = req.body;
+        const jobId = uuidv4();
+        const jobDir = path.join(__dirname, 'codes', jobId);
+
+        try {
+            fs.mkdirSync(jobDir, { recursive: true });
+            fs.writeFileSync(path.join(jobDir, 'checker.cpp'), checkerCode);
+            const testLibPath = path.join(__dirname, 'testlib.h');
+            fs.copyFileSync(testLibPath, path.join(jobDir, 'testlib.h'));
+        } catch (e) {
+            return res.json({
+                errorType: "File Handling Error",
+                errMessage: e.message
+            });
+        }
+
+        let userFile = '';
+        if (language === 'cpp') userFile = 'userCode.cpp';
+        else if (language === 'python') userFile = 'userCode.py';
+        else if (language === 'java') userFile = 'userCode.java';
+
+        try {
+            fs.writeFileSync(path.join(jobDir, userFile), userCode);
+        } catch (e) {
+            return res.json({
+                errorType: "File Handling Error",
+                errMessage: e.message
+            });
+        }
+
+        const dirPath = jobDir.replace(/\\/g, "/");
+
+        try {
+            let setUpCommand = `docker run -dit -v "${dirPath}:/app" gcc-with-time bash`;
+            id = execSync(setUpCommand).toString().trim();
+        } catch (e) {
+            return res.json({
+                errorType: "Docker Error",
+                errMessage: e.stderr?.toString() || e.message
+            });
+        }
+
+        try {
+            execSync(`docker start ${id}`);
+        } catch (e) {
+            return res.json({
+                errorType: "Docker Start Error",
+                errMessage: e.stderr?.toString() || e.message
+            });
+        }
+
+        try {
+            execSync(`docker exec ${id} bash -c "cd /app && g++ userCode.cpp -o userCode"`);
+        } catch (e) {
+            return res.json({
+                errorType: "Compilation Error (userCode)",
+                errMessage: e.stderr?.toString() || e.stdout?.toString() || e.message
+            });
+        }
+
+        try {
+            execSync(`docker exec ${id} bash -c "cd /app && g++ checker.cpp -o customCheck"`);
+        } catch (e) {
+            return res.json({
+                errorType: "Compilation Error (checkerCode)",
+                errMessage: e.stderr?.toString() || e.stdout?.toString() || e.message
+            });
+        }
+
+        let verdicts = [];
+        const inputPath = path.join(jobDir, 'input.txt');
+        const outputPath = path.join(jobDir, 'output.txt');
+        const answerPath = path.join(jobDir, 'answer.txt');
+        const resultPath = path.join(jobDir, 'result.txt');
+        const timePath = path.join(jobDir, 'time.txt');
+        const exitCodePath = path.join(jobDir, 'exitCode.txt');
+
+        const timeLimit = 2;
+
+        for (let i = 0; i < testcases.length; i++) {
+            try {
+                fs.writeFileSync(inputPath, testcases[i].input);
+                fs.writeFileSync(answerPath, testcases[i].answer);
+                fs.writeFileSync(outputPath, '');
+                fs.writeFileSync(resultPath, '');
+                fs.writeFileSync(timePath, '');
+                fs.writeFileSync(exitCodePath, '');
+
+                execSync(`docker cp "${inputPath}" ${id}:/app/input.txt`);
+                execSync(`docker cp "${answerPath}" ${id}:/app/answer.txt`);
+
+                execSync(`docker exec ${id} bash -c "cd /app && \
+                    start=\$(date +%s%3N); \
+                    timeout ${timeLimit} ./userCode < input.txt > output.txt; \
+                    exit_code=\$?; \
+                    end=\$(date +%s%3N); \
+                    echo \$exit_code > exitCode.txt; \
+                    if [ \$exit_code -eq 124 ]; then \
+                    echo '2000' > time.txt; \
+                    else \
+                    echo \$((end - start)) > time.txt; \
+                    fi; \
+                    ./customCheck input.txt output.txt answer.txt > result.txt 2>&1 || true"`);
+
+                execSync(`docker cp ${id}:/app/result.txt "${resultPath}"`);
+                execSync(`docker cp ${id}:/app/time.txt "${timePath}"`);
+                execSync(`docker cp ${id}:/app/exitCode.txt "${exitCodePath}"`);
+
+                const exitCodeRaw = fs.readFileSync(exitCodePath, 'utf-8').trim();
+                const exitCode = parseInt(exitCodeRaw);
+
+                let timeUsed = 0;
+                let timeVerdict = "";
+                let verdict = "";
+
+                if (exitCode === 124) {
+                    verdict = "Time Limit Exceeded";
+                    timeVerdict = "TLE";
+                    timeUsed = timeLimit * 1000;
+                } else if (exitCode !== 0) {
+                    verdict = "Runtime Error";
+                    timeVerdict = "N/A";
+                    timeUsed = 0;
+                } else {
+                    let timeUsedRaw = fs.readFileSync(timePath, 'utf-8').trim();
+                    timeUsed = parseFloat(timeUsedRaw);
+                    if (isNaN(timeUsed)) {
+                        timeUsed = 0;
+                        timeVerdict = "Time Measure Failed";
+                    } else {
+                        timeUsed = Math.min(timeLimit * 1000, timeUsed);
+                        timeVerdict = (timeUsed >= timeLimit * 1000) ? "Time Limit Exceeded" : "Time OK";
+                    }
+                    verdict = fs.readFileSync(resultPath, 'utf-8').trim();
+                }
+
+                verdicts.push({
+                    testcase: i + 1,
+                    time: timeUsed,
+                    timeVerdict: timeVerdict,
+                    verdict: verdict
+                });
+            } catch (e) {
+                verdicts.push({ testcase: i + 1, verdict: "Runtime Error or Docker Copy Error", errMessage: e.message });
+            }
+        }
+
+        fs.rmSync(jobDir, { recursive: true, force: true });
+
+        return res.json({ verdicts });
+
+    } catch (e) {
+        return res.json({
+            errorType: "Backend Error",
+            errMessage: e.message
+        });
+    } finally {
+        try {
+            if (id) execSync(`docker rm -f ${id}`);
+        } catch (e) { }
+    }
+});
+
+module.exports = router;
+
+
+
+
+
+
+
+
+
+const express = require('express');
+const fs = require('fs');
+const path = require('path');
+const { execSync } = require('child_process');
+const { v4: uuidv4 } = require('uuid');
+
+const router = express.Router();
+
+router.post('/judge', async (req, res) => {
+    let id = null;
+    try {
+        const { testcases, checkerCode, userCode, language } = req.body;
+        const jobId = uuidv4();
+        const jobDir = path.join(__dirname, 'codes', jobId);
+
+        try {
+            fs.mkdirSync(jobDir, { recursive: true });
+            fs.writeFileSync(path.join(jobDir, 'checker.cpp'), checkerCode);
+            const testLibPath = path.join(__dirname, 'testlib.h');
+            fs.copyFileSync(testLibPath, path.join(jobDir, 'testlib.h'));
+        } catch (e) {
+            return res.json({
+                errorType: "File Handling Error",
+                errMessage: e.message
+            });
+        }
+
+        let userFile = '';
+        if (language === 'cpp') userFile = 'userCode.cpp';
+        else if (language === 'python') userFile = 'userCode.py';
+        else if (language === 'java') userFile = 'userCode.java';
+        else if (language === 'javascript') userFile = 'userCode.js';
+
+        try {
+            fs.writeFileSync(path.join(jobDir, userFile), userCode);
+        } catch (e) {
+            return res.json({
+                errorType: "File Handling Error",
+                errMessage: e.message
+            });
+        }
+
+        const dirPath = jobDir.replace(/\\/g, "/");
+
+        try {
+            let setUpCommand = `docker run -dit -v "${dirPath}:/app" gcc-with-time bash`;
+            id = execSync(setUpCommand).toString().trim();
+        } catch (e) {
+            return res.json({
+                errorType: "Docker Error",
+                errMessage: e.stderr?.toString() || e.message
+            });
+        }
+
+        try {
+            execSync(`docker start ${id}`);
+        } catch (e) {
+            return res.json({
+                errorType: "Docker Start Error",
+                errMessage: e.stderr?.toString() || e.message
+            });
+        }
+
+        try {
+            if(language === 'cpp'){
+                execSync(`docker exec ${id} bash -c "cd /app && g++ userCode.cpp -o userCode"`);
+            } else if(language === 'java'){
+                execSync(`docker exec ${id} bash -c "cd /app && javac userCode.java"`);
+            }
+        } catch (e) {
+            return res.json({
+                errorType: "Compilation Error (userCode)",
+                errMessage: e.stderr?.toString() || e.stdout?.toString() || e.message
+            });
+        }
+
+        try {
+            execSync(`docker exec ${id} bash -c "cd /app && g++ checker.cpp -o customCheck"`);
+        } catch (e) {
+            return res.json({
+                errorType: "Compilation Error (checkerCode)",
+                errMessage: e.stderr?.toString() || e.stdout?.toString() || e.message
+            });
+        }
+
+        const inputPath = path.join(jobDir, 'input.txt');
+        const outputPath = path.join(jobDir, 'output.txt');
+        const answerPath = path.join(jobDir, 'answer.txt');
+        const resultPath = path.join(jobDir, 'result.txt');
+        const timePath = path.join(jobDir, 'time.txt');
+        const exitCodePath = path.join(jobDir, 'exitCode.txt');
+
+        let verdicts = [];
+        const timeLimit = 2;
+        const verdictKeywords = [
+            'ok',
+            'wrong answer',
+            'wrong output format',
+            'FAIL',
+            'unexpected eof'
+        ];
+        let overAllStatus="Accepted";
+        let runtime=0;
+        for (let i = 0; i < testcases.length; i++) {
+            try {
+                fs.writeFileSync(inputPath, testcases[i].input);
+                fs.writeFileSync(answerPath, testcases[i].answer);
+                fs.writeFileSync(outputPath, '');
+                fs.writeFileSync(resultPath, '');
+                fs.writeFileSync(timePath, '');
+                fs.writeFileSync(exitCodePath, '');
+
+                execSync(`docker cp "${inputPath}" ${id}:/app/input.txt`);
+                execSync(`docker cp "${answerPath}" ${id}:/app/answer.txt`);
+
+                let runCommand = "";
+
+                if(language === 'cpp'){
+                    runCommand = `timeout ${timeLimit} ./userCode < input.txt > output.txt`;
+                } else if(language === 'python'){
+                    runCommand = `timeout ${timeLimit} python3 userCode.py < input.txt > output.txt`;
+                } else if(language === 'java'){
+                    runCommand = `timeout ${timeLimit} java userCode < input.txt > output.txt`;
+                } else if(language === 'javascript'){
+                    runCommand = `timeout ${timeLimit} node userCode.js < input.txt > output.txt`;
+                }
+
+                execSync(`docker exec ${id} bash -c "cd /app && \
+                    start=\$(date +%s%3N); \
+                    ${runCommand}; \
+                    exit_code=\$?; \
+                    end=\$(date +%s%3N); \
+                    echo \$exit_code > exitCode.txt; \
+                    if [ \$exit_code -eq 124 ]; then \
+                    echo '2000' > time.txt; \
+                    else \
+                    echo \$((end - start)) > time.txt; \
+                    fi; \
+                    ./customCheck input.txt output.txt answer.txt > result.txt 2>&1 || true"`);
+
+                execSync(`docker cp ${id}:/app/result.txt "${resultPath}"`);
+                execSync(`docker cp ${id}:/app/output.txt "${outputPath}"`);
+                execSync(`docker cp ${id}:/app/time.txt "${timePath}"`);
+                execSync(`docker cp ${id}:/app/exitCode.txt "${exitCodePath}"`);
+
+                const exitCodeRaw = fs.readFileSync(exitCodePath, 'utf-8').trim();
+                const exitCode = parseInt(exitCodeRaw);
+
+                const result = fs.readFileSync(outputPath, 'utf-8').trim();;
+
+                let timeUsed = 0;
+                let status = "";
+                let checkerLogs = "";
+
+                if (exitCode === 124) {
+                    checkerLogs = "Time Limit Exceeded";
+                    status = "Time Limit Exceeded";
+                    timeUsed = timeLimit * 1000;
+                } else if (exitCode !== 0) {
+                    checkerLogs = "Runtime Error";
+                    status = "Runtime Error";
+                    timeUsed = 0;
+                } else {
+                    let timeUsedRaw = fs.readFileSync(timePath, 'utf-8').trim();
+                    timeUsed = parseFloat(timeUsedRaw);
+                    if (isNaN(timeUsed)) {
+                        timeUsed = 0;
+                    } else {
+                        timeUsed = Math.min(timeLimit * 1000, timeUsed);
+                    }
+                    checkerLogs = fs.readFileSync(resultPath, 'utf-8').trim();
+                }
+                const firstLine = checkerLogs.split('\n')[0].toLowerCase();
+                runtime+=timeUsed;
+                
+                if(status==="Time Limit Exceeded" || status==="Runtime Error"){}
+                else if (firstLine.startsWith('ok')) {
+                    status = "Accepted";
+                } else if (firstLine.startsWith('wrong answer')) {
+                    status = `Wrong Answer on Testcase ${i + 1}`;
+                } else if (firstLine.startsWith('fail')) {
+                    status = "Fail";
+                } else if (firstLine.startsWith('unexpected eof')) {
+                    status = "Unexpected EOF Error";
+                } else if (firstLine.startsWith('wrong output format')) {
+                    status = "Wrong Output Format";
+                } else {
+                    status = "Random Verdict";
+                }
+
+                verdicts.push({
+                    input: testcases[i].input,
+                    output: result,
+                    expected: testcases[i].answer,
+                    status:status,
+                    checkerLogs: checkerLogs,
+                    time: timeUsed
+                });
+                if(status!="Accepted") {
+                    overAllStatus=status;
+                    break;
+                }
+            } catch (e) {
+                verdicts.push({ testcase: i + 1, verdict: "Runtime Error or Docker Copy Error", errMessage: e.message });
+            }
+        }
+
+        fs.rmSync(jobDir, { recursive: true, force: true });
+
+        return res.json({ status:overAllStatus,time:runtime,errType:"",errMessage:"" ,verdicts});
+
+    } catch (e) {
+        return res.json({
+            errorType: "Backend Error",
+            errMessage: e.message
+        });
+    } finally {
+        try {
+            if (id) execSync(`docker rm -f ${id}`);
+        } catch (e) { }
+    }
+});
+
+module.exports = router;
+
+
+
+
+
+
+
+
+const express = require('express');
+const fs = require('fs');
+const path = require('path');
+const { execSync } = require('child_process');
+const { v4: uuidv4 } = require('uuid');
+
+const execute = async (req, res) => {
+    let id = null;
+    try {
+        const { testcases, checkerCode, userCode, language } = req.body;
+        const jobId = uuidv4();
+        const jobDir = path.join(__dirname, 'codes', jobId);
+
+        try {
+            fs.mkdirSync(jobDir, { recursive: true });
+            fs.writeFileSync(path.join(jobDir, 'checker.cpp'), checkerCode);
+            const testLibPath = path.join(__dirname, 'testlib.h');
+            fs.copyFileSync(testLibPath, path.join(jobDir, 'testlib.h'));
+        } catch (e) {
+            return res.json({
+                errorType: "File Handling Error",
+                errMessage: e.message
+            });
+        }
+
+        let userFile = '';
+        if (language === 'cpp') userFile = 'userCode.cpp';
+        else if (language === 'python') userFile = 'userCode.py';
+        else if (language === 'java') userFile = 'userCode.java';
+        else if (language === 'javascript') userFile = 'userCode.js';
+
+        try {
+            fs.writeFileSync(path.join(jobDir, userFile), userCode);
+        } catch (e) {
+            return res.json({
+                errorType: "File Handling Error",
+                errMessage: e.message
+            });
+        }
+
+        const dirPath = jobDir.replace(/\\/g, "/");
+
+        try {
+            let setUpCommand = `docker run -dit -v "${dirPath}:/app" gcc-with-time bash`;
+            id = execSync(setUpCommand).toString().trim();
+        } catch (e) {
+            return res.json({
+                errorType: "Docker Error",
+                errMessage: e.stderr?.toString() || e.message
+            });
+        }
+
+        try {
+            execSync(`docker start ${id}`);
+        } catch (e) {
+            return res.json({
+                errorType: "Docker Start Error",
+                errMessage: e.stderr?.toString() || e.message
+            });
+        }
+
+        try {
+            if(language === 'cpp'){
+                execSync(`docker exec ${id} bash -c "cd /app && g++ userCode.cpp -o userCode"`);
+            } else if(language === 'java'){
+                execSync(`docker exec ${id} bash -c "cd /app && javac userCode.java"`);
+            }
+        } catch (e) {
+            return res.json({
+                errorType: "Compilation Error (userCode)",
+                errMessage: e.stderr?.toString() || e.stdout?.toString() || e.message
+            });
+        }
+
+        try {
+            execSync(`docker exec ${id} bash -c "cd /app && g++ checker.cpp -o customCheck"`);
+        } catch (e) {
+            return res.json({
+                errorType: "Compilation Error (checkerCode)",
+                errMessage: e.stderr?.toString() || e.stdout?.toString() || e.message
+            });
+        }
+
+        const inputPath = path.join(jobDir, 'input.txt');
+        const outputPath = path.join(jobDir, 'output.txt');
+        const answerPath = path.join(jobDir, 'answer.txt');
+        const resultPath = path.join(jobDir, 'result.txt');
+        const timePath = path.join(jobDir, 'time.txt');
+        const exitCodePath = path.join(jobDir, 'exitCode.txt');
+
+        let verdicts = [];
+        const timeLimit = 2;
+        const verdictKeywords = [
+            'ok',
+            'wrong answer',
+            'wrong output format',
+            'FAIL',
+            'unexpected eof'
+        ];
+        let overAllStatus="Accepted";
+        let runtime=0;
+        for (let i = 0; i < testcases.length; i++) {
+            try {
+                fs.writeFileSync(inputPath, testcases[i].input);
+                fs.writeFileSync(answerPath, testcases[i].answer);
+                fs.writeFileSync(outputPath, '');
+                fs.writeFileSync(resultPath, '');
+                fs.writeFileSync(timePath, '');
+                fs.writeFileSync(exitCodePath, '');
+
+                execSync(`docker cp "${inputPath}" ${id}:/app/input.txt`);
+                execSync(`docker cp "${answerPath}" ${id}:/app/answer.txt`);
+
+                let runCommand = "";
+
+                if(language === 'cpp'){
+                    runCommand = `timeout ${timeLimit} ./userCode < input.txt > output.txt`;
+                } else if(language === 'python'){
+                    runCommand = `timeout ${timeLimit} python3 userCode.py < input.txt > output.txt`;
+                } else if(language === 'java'){
+                    runCommand = `timeout ${timeLimit} java userCode < input.txt > output.txt`;
+                } else if(language === 'javascript'){
+                    runCommand = `timeout ${timeLimit} node userCode.js < input.txt > output.txt`;
+                }
+
+                execSync(`docker exec ${id} bash -c "cd /app && \
+                    start=\$(date +%s%3N); \
+                    ${runCommand}; \
+                    exit_code=\$?; \
+                    end=\$(date +%s%3N); \
+                    echo \$exit_code > exitCode.txt; \
+                    if [ \$exit_code -eq 124 ]; then \
+                    echo '2000' > time.txt; \
+                    else \
+                    echo \$((end - start)) > time.txt; \
+                    fi; \
+                    ./customCheck input.txt output.txt answer.txt > result.txt 2>&1 || true"`);
+
+                execSync(`docker cp ${id}:/app/result.txt "${resultPath}"`);
+                execSync(`docker cp ${id}:/app/output.txt "${outputPath}"`);
+                execSync(`docker cp ${id}:/app/time.txt "${timePath}"`);
+                execSync(`docker cp ${id}:/app/exitCode.txt "${exitCodePath}"`);
+
+                const exitCodeRaw = fs.readFileSync(exitCodePath, 'utf-8').trim();
+                const exitCode = parseInt(exitCodeRaw);
+
+                const result = fs.readFileSync(outputPath, 'utf-8').trim();;
+
+                let timeUsed = 0;
+                let status = "";
+                let checkerLogs = "";
+
+                if (exitCode === 124) {
+                    checkerLogs = "Time Limit Exceeded";
+                    status = "Time Limit Exceeded";
+                    timeUsed = timeLimit * 1000;
+                } else if (exitCode !== 0) {
+                    checkerLogs = "Runtime Error";
+                    status = "Runtime Error";
+                    timeUsed = 0;
+                } else {
+                    let timeUsedRaw = fs.readFileSync(timePath, 'utf-8').trim();
+                    timeUsed = parseFloat(timeUsedRaw);
+                    if (isNaN(timeUsed)) {
+                        timeUsed = 0;
+                    } else {
+                        timeUsed = Math.min(timeLimit * 1000, timeUsed);
+                    }
+                    checkerLogs = fs.readFileSync(resultPath, 'utf-8').trim();
+                }
+                const firstLine = checkerLogs.split('\n')[0].toLowerCase();
+                runtime+=timeUsed;
+                
+                if(status==="Time Limit Exceeded" || status==="Runtime Error"){}
+                else if (firstLine.startsWith('ok')) {
+                    status = "Accepted";
+                } else if (firstLine.startsWith('wrong answer')) {
+                    status = `Wrong Answer on Testcase ${i + 1}`;
+                } else if (firstLine.startsWith('fail')) {
+                    status = "Fail";
+                } else if (firstLine.startsWith('unexpected eof')) {
+                    status = "Unexpected EOF Error";
+                } else if (firstLine.startsWith('wrong output format')) {
+                    status = "Wrong Output Format";
+                } else {
+                    status = "Random Verdict";
+                }
+
+                verdicts.push({
+                    input: testcases[i].input,
+                    output: result,
+                    expected: testcases[i].answer,
+                    status:status,
+                    checkerLogs: checkerLogs,
+                    time: timeUsed
+                });
+                if(status!="Accepted") {
+                    overAllStatus=status;
+                    break;
+                }
+            } catch (e) {
+                verdicts.push({ testcase: i + 1, verdict: "Runtime Error or Docker Copy Error", errMessage: e.message });
+            }
+        }
+
+        fs.rmSync(jobDir, { recursive: true, force: true });
+
+        return res.json({ status:overAllStatus,time:runtime,errType:"",errMessage:"" ,verdicts});
+
+    } catch (e) {
+        return res.json({
+            errorType: "Backend Error",
+            errMessage: e.message
+        });
+    } finally {
+        try {
+            if (id) execSync(`docker rm -f ${id}`);
+        } catch (e) { }
+    }
+};
+
+module.exports={execute};
